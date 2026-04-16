@@ -25,6 +25,3 @@ jobs:
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
         run: python main.py
-        
-if not WEBHOOK_URL:
-    raise ValueError("WEBHOOK_URL 没有设置")
