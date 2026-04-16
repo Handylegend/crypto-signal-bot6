@@ -5,22 +5,28 @@ import os
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-# ===== 配置 =====
+if not WEBHOOK_URL:
+    raise ValueError("WEBHOOK_URL 没有设置")
+
 SYMBOL = "BTC/USDT"
 TIMEFRAME = "5m"
 
-# ===== 获取数据 =====
-exchange = ccxt.binance({
-    'enableRateLimit': True
-})
-ohlcv = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=50)
+try:
+    exchange = ccxt.binance({
+        'enableRateLimit': True
+    })
 
-df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "volume"])
+    ohlcv = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=50)
 
-# ===== 简单测试信号 =====
-last_price = df["close"].iloc[-1]
+    df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "volume"])
 
-message = f"🚨 测试信号\n{SYMBOL} 当前价格: {last_price}"
+    last_price = df["close"].iloc[-1]
 
-# ===== 发送到 Discord =====
-requests.post(WEBHOOK_URL, json={"content": message})
+    message = f"🚨 测试信号\n{SYMBOL} 当前价格: {last_price}"
+
+    requests.post(WEBHOOK_URL, json={"content": message})
+
+except Exception as e:
+    error_msg = f"❌ 报错: {str(e)}"
+    requests.post(WEBHOOK_URL, json={"content": error_msg})
+    raise
