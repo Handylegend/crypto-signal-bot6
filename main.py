@@ -68,7 +68,7 @@ try:
     prev2 = df.iloc[-3]
     change_prev = (prev["close"] - prev2["close"]) / prev2["close"]
 
-    cond_change = (change_last > 0) and (change_prev > 0) and (change_last > 2 * change_prev)
+    cond_change = (change_last > 0) and (change_prev > 0) and (change_last > 1.5 * change_prev)
 
     # 6. OI 放大1.5倍
     cond_oi = oi_last > 1.5 * oi_prev
