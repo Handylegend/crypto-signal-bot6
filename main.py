@@ -10,7 +10,9 @@ SYMBOL = "BTC/USDT"
 TIMEFRAME = "5m"
 
 # ===== 获取数据 =====
-exchange = ccxt.binance()
+exchange = ccxt.binance({
+    'enableRateLimit': True
+})
 ohlcv = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=50)
 
 df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "volume"])
