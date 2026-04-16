@@ -70,8 +70,8 @@ try:
 
     cond_change = (change_last > 0) and (change_prev > 0) and (change_last > 2 * change_prev)
 
-    # 6. OI 放大两倍
-    cond_oi = oi_last > 2 * oi_prev
+    # 6. OI 放大1.5倍
+    cond_oi = oi_last > 1.5 * oi_prev
 
     # 7. ATR过滤
     atr_ratio = last["atr"] / last["close"]
