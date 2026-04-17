@@ -2,5 +2,4 @@ requests
 pandas
 tqdm
 dateparser
-pandas-ta
 python-binance
