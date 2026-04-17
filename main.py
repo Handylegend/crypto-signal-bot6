@@ -17,7 +17,7 @@ client = Client(API_KEY, API_SECRET)
 
 CACHE_FILE = "signal_cache.json"
 
-# ===== 缓存 =====
+# ===== 缓存（去重）=====
 def load_cache():
     if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, "r") as f:
@@ -52,6 +52,7 @@ def get_klines(symbol):
         "close_time","qav","trades","tbbav","tbqav","ignore"
     ])
 
+    df["open"] = df["open"].astype(float)
     df["close"] = df["close"].astype(float)
     df["high"] = df["high"].astype(float)
     df["low"] = df["low"].astype(float)
@@ -80,7 +81,7 @@ def check_signal(symbol):
     if len(df) < 50:
         return None
 
-    # ===== 指标 =====
+    # ===== 技术指标 =====
     df["ema7"] = EMAIndicator(df["close"], window=7).ema_indicator()
     df["ema25"] = EMAIndicator(df["close"], window=25).ema_indicator()
     df["rsi"] = RSIIndicator(df["close"], window=14).rsi()
@@ -93,8 +94,10 @@ def check_signal(symbol):
 
     last = df.iloc[-1]
 
-    # ===== ATR =====
+    # ===== ATR过滤 =====
     atr_percent = last["atr"] / last["close"] * 100
+    if atr_percent < 1.5:
+        return None
 
     # ===== OI =====
     oi = get_oi(symbol)
@@ -111,6 +114,15 @@ def check_signal(symbol):
         funding = get_funding(symbol)
     except:
         funding = 0
+
+    # ===== CVD计算 =====
+    df["delta"] = df.apply(
+        lambda row: row["volume"] if row["close"] > row["open"] else -row["volume"],
+        axis=1
+    )
+    df["cvd"] = df["delta"].cumsum()
+
+    cvd_trend = df["cvd"].iloc[-1] - df["cvd"].iloc[-5]
 
     # ===== 评分系统 =====
     score = 0
@@ -136,18 +148,20 @@ def check_signal(symbol):
         score += 2
         reasons.append("成交量放大")
 
-    # Funding逻辑
+    # Funding过滤 + 加分
     if funding < 0:
         score += 2
         reasons.append("Funding有利")
     elif funding > 0.0003:
-        return None  # 直接过滤
-
-    if atr_percent < 1.5:
         return None
 
-    # ===== 最终判断 =====
-    if score >= 6:
+    # CVD
+    if cvd_trend > 0:
+        score += 2
+        reasons.append("CVD买盘主导")
+
+    # ===== 信号触发阈值 =====
+    if score >= 7:
         return {
             "symbol": symbol,
             "price": last["close"],
