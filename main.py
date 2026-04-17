@@ -13,6 +13,7 @@ DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
 
 CACHE_FILE = "signal_cache.json"
 
+# ===== 安全请求 =====
 def safe_request(url, retries=3, timeout=10):
     for i in range(retries):
         try:
@@ -35,7 +36,7 @@ def safe_request(url, retries=3, timeout=10):
             time.sleep(1)
 
     return None
-    
+
 # ===== 缓存 =====
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -46,6 +47,22 @@ def load_cache():
 def save_cache(cache):
     with open(CACHE_FILE, "w") as f:
         json.dump(cache, f)
+
+# ===== 测试消息 =====
+def send_test_message():
+    try:
+        msg = "✅ Bot启动成功（链路正常）"
+        requests.post(DISCORD_WEBHOOK, json={"content": msg}, timeout=5)
+        print("测试消息已发送")
+    except Exception as e:
+        print("测试消息发送失败:", e)
+
+# ===== Discord =====
+def send_discord(msg):
+    try:
+        requests.post(DISCORD_WEBHOOK, json={"content": msg}, timeout=5)
+    except Exception as e:
+        print("Discord发送失败:", e)
 
 # ===== 获取涨幅榜 =====
 def get_top_gainers():
@@ -122,10 +139,9 @@ def check_signal(symbol):
     df = get_klines(symbol)
 
     if df is None or len(df) < 50:
-        
-      return None
+        return None
 
-    # ===== 指标 =====
+    # 指标
     df["ema7"] = EMAIndicator(df["close"], window=7).ema_indicator()
     df["ema25"] = EMAIndicator(df["close"], window=25).ema_indicator()
     df["rsi"] = RSIIndicator(df["close"], window=14).rsi()
@@ -154,12 +170,9 @@ def check_signal(symbol):
     vol_ratio = last["volume"] / avg_vol if avg_vol else 0
 
     # Funding
-    try:
-        funding = get_funding(symbol)
-    except:
-        funding = 0
+    funding = get_funding(symbol)
 
-    # ===== CVD =====
+    # CVD
     df["delta"] = df.apply(
         lambda row: row["volume"] if row["close"] > row["open"] else -row["volume"],
         axis=1
@@ -167,7 +180,7 @@ def check_signal(symbol):
     df["cvd"] = df["delta"].cumsum()
     cvd_trend = df["cvd"].iloc[-1] - df["cvd"].iloc[-5]
 
-    # ===== 评分 =====
+    # 评分
     score = 0
     reasons = []
 
@@ -187,7 +200,7 @@ def check_signal(symbol):
         score += 2
         reasons.append("OI放大")
 
-    if vol_ratio >= 1.5:
+    if vol_ratio >= 1.3:
         score += 2
         reasons.append("成交量放大")
 
@@ -216,18 +229,19 @@ def check_signal(symbol):
 
     return None
 
-# ===== Discord =====
-def send_discord(msg):
-    requests.post(DISCORD_WEBHOOK, json={"content": msg})
-
 # ===== 主程序 =====
 def run():
+    send_test_message()  # 启动测试
+
     cache = load_cache()
     new_cache = {}
 
     symbols = get_top_gainers()
     print("扫描:", len(symbols))
 
+    if not symbols:
+        print("没有交易对")
+        return
 
     for symbol in symbols:
         try:
