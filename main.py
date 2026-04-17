@@ -1,6 +1,5 @@
 import requests
 import pandas as pd
-from binance.client import Client
 import time
 import os
 import json
@@ -9,15 +8,12 @@ from ta.trend import EMAIndicator
 from ta.momentum import RSIIndicator
 from ta.volatility import BollingerBands, AverageTrueRange
 
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
+BASE_URL = "https://api.bybit.com"
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
-
-client = Client(API_KEY, API_SECRET)
 
 CACHE_FILE = "signal_cache.json"
 
-# ===== 缓存（去重）=====
+# ===== 缓存 =====
 def load_cache():
     if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, "r") as f:
@@ -28,29 +24,32 @@ def save_cache(cache):
     with open(CACHE_FILE, "w") as f:
         json.dump(cache, f)
 
-# ===== 涨幅榜 =====
+# ===== 获取涨幅榜 =====
 def get_top_gainers():
-    url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
-    data = requests.get(url).json()
+    url = f"{BASE_URL}/v5/market/tickers?category=linear"
+    data = requests.get(url).json()["result"]["list"]
 
     df = pd.DataFrame(data)
-    df["priceChangePercent"] = df["priceChangePercent"].astype(float)
+
+    df["price24hPcnt"] = df["price24hPcnt"].astype(float)
 
     df = df[df["symbol"].str.endswith("USDT")]
-    df = df[df["priceChangePercent"] < 30]
+    df = df[df["price24hPcnt"] < 0.3]  # 小于30%
 
-    df = df.sort_values(by="priceChangePercent", ascending=False)
+    df = df.sort_values(by="price24hPcnt", ascending=False)
 
     return df.head(100)["symbol"].tolist()
 
 # ===== K线 =====
 def get_klines(symbol):
-    klines = client.futures_klines(symbol=symbol, interval="15m", limit=100)
+    url = f"{BASE_URL}/v5/market/kline?category=linear&symbol={symbol}&interval=15&limit=100"
+    data = requests.get(url).json()["result"]["list"]
 
-    df = pd.DataFrame(klines, columns=[
-        "time","open","high","low","close","volume",
-        "close_time","qav","trades","tbbav","tbqav","ignore"
+    df = pd.DataFrame(data, columns=[
+        "time","open","high","low","close","volume","turnover"
     ])
+
+    df = df[::-1]
 
     df["open"] = df["open"].astype(float)
     df["close"] = df["close"].astype(float)
@@ -62,17 +61,17 @@ def get_klines(symbol):
 
 # ===== OI =====
 def get_oi(symbol):
-    url = f"https://fapi.binance.com/futures/data/openInterestHist?symbol={symbol}&period=15m&limit=3"
-    data = requests.get(url).json()
-    if not data:
-        return None
-    return [float(x["sumOpenInterest"]) for x in data]
+    url = f"{BASE_URL}/v5/market/open-interest?category=linear&symbol={symbol}&intervalTime=15min&limit=2"
+    data = requests.get(url).json()["result"]["list"]
+
+    return [float(x["openInterest"]) for x in data]
 
 # ===== Funding =====
 def get_funding(symbol):
-    url = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol}"
-    data = requests.get(url).json()
-    return float(data["lastFundingRate"])
+    url = f"{BASE_URL}/v5/market/tickers?category=linear&symbol={symbol}"
+    data = requests.get(url).json()["result"]["list"][0]
+
+    return float(data["fundingRate"])
 
 # ===== 信号检测 =====
 def check_signal(symbol):
@@ -81,7 +80,7 @@ def check_signal(symbol):
     if len(df) < 50:
         return None
 
-    # ===== 技术指标 =====
+    # ===== 指标 =====
     df["ema7"] = EMAIndicator(df["close"], window=7).ema_indicator()
     df["ema25"] = EMAIndicator(df["close"], window=25).ema_indicator()
     df["rsi"] = RSIIndicator(df["close"], window=14).rsi()
@@ -94,37 +93,36 @@ def check_signal(symbol):
 
     last = df.iloc[-1]
 
-    # ===== ATR过滤 =====
+    # ATR过滤
     atr_percent = last["atr"] / last["close"] * 100
     if atr_percent < 1.5:
         return None
 
-    # ===== OI =====
+    # OI
     oi = get_oi(symbol)
-    if oi is None or len(oi) < 2:
+    if not oi or len(oi) < 2:
         return None
     oi_ratio = oi[-1] / oi[-2] if oi[-2] != 0 else 0
 
-    # ===== Volume Spike =====
+    # Volume
     avg_vol = df["volume"].rolling(20).mean().iloc[-1]
     vol_ratio = last["volume"] / avg_vol if avg_vol else 0
 
-    # ===== Funding =====
+    # Funding
     try:
         funding = get_funding(symbol)
     except:
         funding = 0
 
-    # ===== CVD计算 =====
+    # ===== CVD =====
     df["delta"] = df.apply(
         lambda row: row["volume"] if row["close"] > row["open"] else -row["volume"],
         axis=1
     )
     df["cvd"] = df["delta"].cumsum()
-
     cvd_trend = df["cvd"].iloc[-1] - df["cvd"].iloc[-5]
 
-    # ===== 评分系统 =====
+    # ===== 评分 =====
     score = 0
     reasons = []
 
@@ -148,19 +146,16 @@ def check_signal(symbol):
         score += 2
         reasons.append("成交量放大")
 
-    # Funding过滤 + 加分
     if funding < 0:
         score += 2
         reasons.append("Funding有利")
     elif funding > 0.0003:
         return None
 
-    # CVD
     if cvd_trend > 0:
         score += 2
-        reasons.append("CVD买盘主导")
+        reasons.append("CVD买盘")
 
-    # ===== 信号触发阈值 =====
     if score >= 7:
         return {
             "symbol": symbol,
