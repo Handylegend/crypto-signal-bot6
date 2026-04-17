@@ -71,19 +71,10 @@ def send_test_message():
 
 # ===== 每日心跳 =====
 def send_daily_heartbeat():
-    now = time.gmtime()  # UTC
-
-    if now.tm_hour == 12 and now.tm_min < 10:  # 08:30 智利时间
-        flag = load_daily_flag()
-        today = time.strftime("%Y-%m-%d", now)
-
-        if flag.get("date") != today:
-            msg = "🟢 系统运行正常（每日心跳）"
-            send_discord(msg)
-            print("发送每日心跳")
-
-            flag["date"] = today
-            save_daily_flag(flag)
+    # 只在启动时发送一次，不再循环触发
+    msg = "🟢 系统运行正常（每日心跳）"
+    send_discord(msg)
+    print("发送每日心跳")
 
 # ===== Discord =====
 def send_discord(msg):
@@ -273,7 +264,7 @@ def run():
 
                 if key not in cache:
                     msg = (
-                        f"🚀 {signal['symbol']} | 评分: {signal['score']}\n"
+                        f"🚀 {signal['symbol']} | 评分: {signal['score']} | 积蓄爆发\n"
                         f"价格: {signal['price']}\n"
                         f"OI: {signal['oi']}x | VOL: {signal['vol']}x\n"
                         f"Funding: {signal['funding']}\n"
