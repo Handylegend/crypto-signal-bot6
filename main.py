@@ -12,6 +12,7 @@ BASE_URL = "https://api.bybit.com"
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
 
 CACHE_FILE = "signal_cache.json"
+DAILY_FLAG_FILE = "daily_flag.json"
 
 # ===== 安全请求 =====
 def safe_request(url, retries=3, timeout=10):
@@ -48,7 +49,18 @@ def save_cache(cache):
     with open(CACHE_FILE, "w") as f:
         json.dump(cache, f)
 
-# ===== 测试消息 =====
+# ===== 每日心跳缓存 =====
+def load_daily_flag():
+    if os.path.exists(DAILY_FLAG_FILE):
+        with open(DAILY_FLAG_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_daily_flag(data):
+    with open(DAILY_FLAG_FILE, "w") as f:
+        json.dump(data, f)
+
+# ===== 启动测试 =====
 def send_test_message():
     try:
         msg = "✅ Bot启动成功（链路正常）"
@@ -57,6 +69,22 @@ def send_test_message():
     except Exception as e:
         print("测试消息发送失败:", e)
 
+# ===== 每日心跳 =====
+def send_daily_heartbeat():
+    now = time.gmtime()  # UTC
+
+    if now.tm_hour == 12 and now.tm_min < 10:  # 08:30 智利时间
+        flag = load_daily_flag()
+        today = time.strftime("%Y-%m-%d", now)
+
+        if flag.get("date") != today:
+            msg = "🟢 系统运行正常（每日心跳）"
+            send_discord(msg)
+            print("发送每日心跳")
+
+            flag["date"] = today
+            save_daily_flag(flag)
+
 # ===== Discord =====
 def send_discord(msg):
     try:
@@ -64,7 +92,7 @@ def send_discord(msg):
     except Exception as e:
         print("Discord发送失败:", e)
 
-# ===== 获取涨幅榜 =====
+# ===== 涨幅榜 =====
 def get_top_gainers():
     url = f"{BASE_URL}/v5/market/tickers?category=linear"
 
@@ -141,7 +169,6 @@ def check_signal(symbol):
     if df is None or len(df) < 50:
         return None
 
-    # 指标
     df["ema7"] = EMAIndicator(df["close"], window=7).ema_indicator()
     df["ema25"] = EMAIndicator(df["close"], window=25).ema_indicator()
     df["rsi"] = RSIIndicator(df["close"], window=14).rsi()
@@ -154,22 +181,18 @@ def check_signal(symbol):
 
     last = df.iloc[-1]
 
-    # ATR过滤
     atr_percent = last["atr"] / last["close"] * 100
     if atr_percent < 1.5:
         return None
 
-    # OI
     oi = get_oi(symbol)
     if not oi or len(oi) < 2:
         return None
     oi_ratio = oi[-1] / oi[-2] if oi[-2] != 0 else 0
 
-    # Volume
     avg_vol = df["volume"].rolling(20).mean().iloc[-1]
     vol_ratio = last["volume"] / avg_vol if avg_vol else 0
 
-    # Funding
     funding = get_funding(symbol)
 
     # CVD
@@ -180,7 +203,7 @@ def check_signal(symbol):
     df["cvd"] = df["delta"].cumsum()
     cvd_trend = df["cvd"].iloc[-1] - df["cvd"].iloc[-5]
 
-    # 评分
+    # ===== 评分 =====
     score = 0
     reasons = []
 
@@ -192,29 +215,27 @@ def check_signal(symbol):
         score += 1
         reasons.append("EMA趋势")
 
-    if last["rsi"] > 45:
+    if last["rsi"] > 42:
         score += 1
         reasons.append("RSI")
 
-    if oi_ratio >= 1.5:
+    if oi_ratio >= 1.2:
         score += 2
         reasons.append("OI放大")
 
-    if vol_ratio >= 1.3:
+    if vol_ratio >= 1.2:
         score += 2
         reasons.append("成交量放大")
 
     if funding < 0:
         score += 2
         reasons.append("Funding有利")
-    elif funding > 0.0003:
-        return None
 
     if cvd_trend > 0:
         score += 2
         reasons.append("CVD买盘")
 
-    if score >= 7:
+    if score >= 5:
         return {
             "symbol": symbol,
             "price": last["close"],
@@ -231,7 +252,8 @@ def check_signal(symbol):
 
 # ===== 主程序 =====
 def run():
-    send_test_message()  # 启动测试
+    send_test_message()
+    send_daily_heartbeat()
 
     cache = load_cache()
     new_cache = {}
@@ -240,7 +262,6 @@ def run():
     print("扫描:", len(symbols))
 
     if not symbols:
-        print("没有交易对")
         return
 
     for symbol in symbols:
