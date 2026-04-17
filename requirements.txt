@@ -1,10 +1,5 @@
-config
-futures
 requests
 pandas
-numpy
-six
-sklearn
 tqdm
 dateparser
 pandas-ta
