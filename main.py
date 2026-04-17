@@ -226,11 +226,6 @@ def run():
     new_cache = {}
 
     symbols = get_top_gainers()
-        
-    if not symbols:
-    print("没有获取到交易对，跳过本轮")
-    return
-    
     print("扫描:", len(symbols))
 
 
