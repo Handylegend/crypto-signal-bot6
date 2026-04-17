@@ -3,3 +3,4 @@ pandas
 tqdm
 dateparser
 python-binance
+ta==0.11.0
