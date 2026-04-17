@@ -1,118 +1,129 @@
-import ccxt
+import requests
 import pandas as pd
 import pandas_ta as ta
-import requests
-import os
+from binance.client import Client
+import time
 
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+API_KEY = ""
+API_SECRET = ""
+DISCORD_WEBHOOK = ""
 
-SYMBOL = "BTC/USDT"
-TIMEFRAME = "15m"
+client = Client(API_KEY, API_SECRET)
 
-def get_oi():
-    # Binance OI（USDT永续）
-    url = "https://fapi.binance.com/futures/data/openInterestHist"
-    params = {
-        "symbol": "BTCUSDT",
-        "period": "15m",
-        "limit": 50
-    }
-    data = requests.get(url, params=params).json()
+# ===== 获取涨幅榜前100（排除>30%）=====
+def get_top_gainers():
+    url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+    data = requests.get(url).json()
+
     df = pd.DataFrame(data)
-    df["sumOpenInterest"] = df["sumOpenInterest"].astype(float)
-    return df
+    df["priceChangePercent"] = df["priceChangePercent"].astype(float)
 
-try:
-    exchange = ccxt.binance()
+    df = df[df["symbol"].str.endswith("USDT")]
+    df = df[df["priceChangePercent"] < 30]
 
-    ohlcv = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=100)
-    df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
+    df = df.sort_values(by="priceChangePercent", ascending=False)
 
-    # ===== 指标 =====
-    df["ema7"] = ta.ema(df["close"], length=7)
-    df["ema20"] = ta.ema(df["close"], length=20)
-    df["ema25"] = ta.ema(df["close"], length=25)
+    return df.head(100)["symbol"].tolist()
 
-    bb = ta.bbands(df["close"], length=20)
-    df["bb_upper"] = bb["BBU_20_2.0"]
+# ===== 获取K线 =====
+def get_klines(symbol):
+    klines = client.futures_klines(symbol=symbol, interval="15m", limit=100)
 
-    df["rsi"] = ta.rsi(df["close"], length=14)
-    df["atr"] = ta.atr(df["high"], df["low"], df["close"], length=14)
-
-    # ===== OI =====
-    oi_df = get_oi()
-
-    # ===== 当前 & 前一根 =====
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    oi_last = oi_df["sumOpenInterest"].iloc[-1]
-    oi_prev = oi_df["sumOpenInterest"].iloc[-2]
-
-    # ===== 条件 =====
-
-    # 1. 布林带突破
-    cond_bb = last["close"] > last["bb_upper"]
-
-    # 2. EMA20突破（从下到上）
-    cond_ema20 = prev["close"] < prev["ema20"] and last["close"] > last["ema20"]
-
-    # 3. EMA7 > EMA25
-    cond_ema_trend = last["ema7"] > last["ema25"]
-
-    # 4. RSI > 45
-    cond_rsi = last["rsi"] > 45
-
-    # 5. 涨幅条件
-    change_last = (last["close"] - prev["close"]) / prev["close"]
-    prev2 = df.iloc[-3]
-    change_prev = (prev["close"] - prev2["close"]) / prev2["close"]
-
-    cond_change = (change_last > 0) and (change_prev > 0) and (change_last > 1.5 * change_prev)
-
-    # 6. OI 放大1.5倍
-    cond_oi = oi_last > 1.5 * oi_prev
-
-    # 7. ATR过滤
-    atr_ratio = last["atr"] / last["close"]
-    cond_atr = atr_ratio >= 0.015   # 小于1.5%跳过
-
-    # ===== 总信号 =====
-    signal = all([
-        cond_bb,
-        cond_ema20,
-        cond_ema_trend,
-        cond_rsi,
-        cond_change,
-        cond_oi,
-        cond_atr
+    df = pd.DataFrame(klines, columns=[
+        "time","open","high","low","close","volume",
+        "close_time","qav","trades","tbbav","tbqav","ignore"
     ])
 
-    if signal:
-        message = f"""
-🚀 强势多头信号
-{SYMBOL}
+    df["close"] = df["close"].astype(float)
+    df["high"] = df["high"].astype(float)
+    df["low"] = df["low"].astype(float)
 
-价格: {last['close']:.2f}
-RSI: {last['rsi']:.2f}
-ATR%: {atr_ratio*100:.2f}%
-OI倍数: {oi_last/oi_prev:.2f}x
+    return df
 
-条件满足：
-✔ 布林带突破
-✔ EMA20突破
-✔ EMA7>EMA25
-✔ RSI>45
-✔ 动量增强
-✔ OI放大
-"""
+# ===== 获取OI =====
+def get_oi(symbol):
+    url = f"https://fapi.binance.com/futures/data/openInterestHist?symbol={symbol}&period=15m&limit=5"
+    data = requests.get(url).json()
+    if not data:
+        return None
 
-        requests.post(WEBHOOK_URL, json={"content": message})
-        print("信号已发送")
+    oi_values = [float(x["sumOpenInterest"]) for x in data]
+    return oi_values
 
-    else:
-        print("无信号")
+# ===== 检测信号 =====
+def check_signal(symbol):
+    df = get_klines(symbol)
 
-except Exception as e:
-    print("错误:", str(e))
-    raise
+    if len(df) < 50:
+        return None
+
+    # 指标
+    df["ema7"] = ta.ema(df["close"], length=7)
+    df["ema25"] = ta.ema(df["close"], length=25)
+    df["rsi"] = ta.rsi(df["close"], length=14)
+    bb = ta.bbands(df["close"], length=20)
+    df["bb_upper"] = bb["BBU_20_2.0"]
+    df["atr"] = ta.atr(df["high"], df["low"], df["close"], length=14)
+
+    last = df.iloc[-1]
+
+    # ATR百分比
+    atr_percent = last["atr"] / last["close"] * 100
+
+    # OI
+    oi = get_oi(symbol)
+    if oi is None or len(oi) < 3:
+        return None
+
+    oi_ratio = oi[-1] / oi[-2] if oi[-2] != 0 else 0
+
+    # ===== 条件 =====
+    if (
+        last["close"] > last["bb_upper"] and
+        last["ema7"] > last["ema25"] and
+        last["rsi"] > 45 and
+        oi_ratio >= 1.5 and
+        atr_percent >= 1.5
+    ):
+        return {
+            "symbol": symbol,
+            "price": last["close"],
+            "oi_ratio": round(oi_ratio, 2),
+            "rsi": round(last["rsi"], 2),
+            "atr": round(atr_percent, 2)
+        }
+
+    return None
+
+# ===== 发送Discord =====
+def send_discord(msg):
+    requests.post(DISCORD_WEBHOOK, json={"content": msg})
+
+# ===== 主程序 =====
+def run():
+    symbols = get_top_gainers()
+
+    print("扫描币种数量:", len(symbols))
+
+    for symbol in symbols:
+        try:
+            signal = check_signal(symbol)
+
+            if signal:
+                msg = (
+                    f"🚀 {signal['symbol']} 信号触发\n"
+                    f"价格: {signal['price']}\n"
+                    f"OI倍率: {signal['oi_ratio']}x\n"
+                    f"RSI: {signal['rsi']}\n"
+                    f"ATR: {signal['atr']}%\n"
+                )
+                print(msg)
+                send_discord(msg)
+
+            time.sleep(0.2)
+
+        except Exception as e:
+            print(symbol, "error:", e)
+
+if __name__ == "__main__":
+    run()
