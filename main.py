@@ -13,6 +13,29 @@ DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
 
 CACHE_FILE = "signal_cache.json"
 
+def safe_request(url, retries=3, timeout=10):
+    for i in range(retries):
+        try:
+            res = requests.get(url, timeout=timeout)
+
+            if res.status_code != 200:
+                print(f"HTTP错误 {res.status_code}: {url}")
+                time.sleep(1)
+                continue
+
+            if not res.text:
+                print("空响应:", url)
+                time.sleep(1)
+                continue
+
+            return res.json()
+
+        except Exception as e:
+            print(f"请求失败({i+1}):", e)
+            time.sleep(1)
+
+    return None
+    
 # ===== 缓存 =====
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -27,14 +50,18 @@ def save_cache(cache):
 # ===== 获取涨幅榜 =====
 def get_top_gainers():
     url = f"{BASE_URL}/v5/market/tickers?category=linear"
-    data = requests.get(url).json()["result"]["list"]
 
-    df = pd.DataFrame(data)
+    data = safe_request(url)
+    if not data or "result" not in data:
+        print("获取涨幅榜失败")
+        return []
+
+    df = pd.DataFrame(data["result"]["list"])
 
     df["price24hPcnt"] = df["price24hPcnt"].astype(float)
 
     df = df[df["symbol"].str.endswith("USDT")]
-    df = df[df["price24hPcnt"] < 0.3]  # 小于30%
+    df = df[df["price24hPcnt"] < 0.3]
 
     df = df.sort_values(by="price24hPcnt", ascending=False)
 
@@ -43,9 +70,16 @@ def get_top_gainers():
 # ===== K线 =====
 def get_klines(symbol):
     url = f"{BASE_URL}/v5/market/kline?category=linear&symbol={symbol}&interval=15&limit=100"
-    data = requests.get(url).json()["result"]["list"]
 
-    df = pd.DataFrame(data, columns=[
+    data = safe_request(url)
+    if not data or "result" not in data:
+        return None
+
+    raw = data["result"]["list"]
+    if not raw:
+        return None
+
+    df = pd.DataFrame(raw, columns=[
         "time","open","high","low","close","volume","turnover"
     ])
 
@@ -62,23 +96,34 @@ def get_klines(symbol):
 # ===== OI =====
 def get_oi(symbol):
     url = f"{BASE_URL}/v5/market/open-interest?category=linear&symbol={symbol}&intervalTime=15min&limit=2"
-    data = requests.get(url).json()["result"]["list"]
 
-    return [float(x["openInterest"]) for x in data]
+    data = safe_request(url)
+    if not data or "result" not in data:
+        return None
+
+    raw = data["result"]["list"]
+    if not raw:
+        return None
+
+    return [float(x["openInterest"]) for x in raw]
 
 # ===== Funding =====
 def get_funding(symbol):
     url = f"{BASE_URL}/v5/market/tickers?category=linear&symbol={symbol}"
-    data = requests.get(url).json()["result"]["list"][0]
 
-    return float(data["fundingRate"])
+    data = safe_request(url)
+    if not data or "result" not in data:
+        return 0
+
+    return float(data["result"]["list"][0]["fundingRate"])
 
 # ===== 信号检测 =====
 def check_signal(symbol):
     df = get_klines(symbol)
 
-    if len(df) < 50:
-        return None
+    if df is None or len(df) < 50:
+        
+      return None
 
     # ===== 指标 =====
     df["ema7"] = EMAIndicator(df["close"], window=7).ema_indicator()
@@ -181,7 +226,13 @@ def run():
     new_cache = {}
 
     symbols = get_top_gainers()
+        
+    if not symbols:
+    print("没有获取到交易对，跳过本轮")
+    return
+    
     print("扫描:", len(symbols))
+
 
     for symbol in symbols:
         try:
@@ -204,7 +255,7 @@ def run():
 
                 new_cache[key] = True
 
-            time.sleep(0.2)
+            time.sleep(0.3)
 
         except Exception as e:
             print(symbol, "error:", e)
