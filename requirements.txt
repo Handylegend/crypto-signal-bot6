@@ -1,4 +1,9 @@
-ccxt
-pandas
-pandas-ta==0.3.14b0
+config
+futures
 requests
+pandas
+numpy
+six
+sklearn
+tqdm
+dateparser
